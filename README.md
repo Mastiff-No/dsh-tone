@@ -8,6 +8,20 @@
 
 ---
 
+## 目录
+
+- [它解决什么](#它解决什么)
+- [安装](#安装)
+- [怎么用](#怎么用)
+- [档位换过的时候会多说一句](#档位换过的时候会多说一句)
+- [出问题了先看这里](#出问题了先看这里)
+- [怎么确认它真的生效了](#怎么确认它真的生效了)
+- [它怎么生效的](#它怎么生效的)
+- [兼容性](#兼容性)
+- [已知限制](#已知限制)
+- [四条容易踩的坑（都是实际踩到的）](#四条容易踩的坑都是实际踩到的)
+- [开发](#开发)
+
 ## 它解决什么
 
 大部分人调 AI 语气的方式是改系统提示，改完要重启、要重开会话，而且只有"一刀切"的一种口味。
@@ -25,10 +39,11 @@
 ## 安装
 
 **从 npm 安装**（[dsh-tone](https://www.npmjs.com/package/dsh-tone)）：
-
 ```bash
 dsh plugin --profile desktop add dsh-tone
 ```
+
+> npm 上的版本不总是和仓库同步。想要最新代码，用下面的 GitHub 方式装，或者直接挂本地目录。
 
 需要 DSH 0.2.0 或更高版本。本地开发时可以直接挂目录：
 
@@ -61,6 +76,18 @@ dsh plugin --profile desktop add "link:C:\path\to\dsh-tone" --save-exact
 
 面板顶上的开关。关掉之后插件**完全不注入任何内容**（不是把档位调到 0，是真的什么都不发）。
 
+### 卸载
+
+先**完全退出 DSH**。插件文件被占用时 Windows 会拒绝替换，报 `EPERM`；那时卸不干净，下次启动会去加载一个残缺的目录。
+
+```bash
+dsh plugin --profile desktop remove dsh-tone
+```
+
+然后检查 `%USERPROFILE%\.dsh\profiles\desktop\package.json` 的 `dsh.profile.bundles` 数组，如果里面还留着 `"dsh-tone"` 就手动删掉。这个数组是真正的加载清单，不清的话 DSH 会一直尝试加载已经不存在的插件。
+
+最后可选：删掉状态文件 `%USERPROFILE%\.dsh\dsh-tone.json`（不删也不影响别的，只是回来装的时候能恢复你之前的档位和文案）。
+
 ### 改档位文案
 
 点「编辑档位」展开，四档各有：
@@ -77,6 +104,53 @@ dsh plugin --profile desktop add "link:C:\path\to\dsh-tone" --save-exact
 按住把手可以拖，松手会吸附到最近的左/右边缘，纵向位置也会记住。换个屏幕、改窗口大小都不会跑丢。
 
 ---
+
+### 界面上那些标记是什么意思
+
+面板里除了滑块，还有几行东西，它们各自回答一个不同的问题：
+
+| 标记 | 位置 | 它回答什么 |
+|---|---|---|
+| `0 正式 —— 10 随性` + 四段刻度 | 滑块下方 | 0-10 是连续的值，但**只有 4 个有效档**（0-3 / 4-6 / 7-8 / 9-10）。同一档内换数字不会有变化，刻度带上标了分界 |
+| 档位名 + 一行描述 | 滑块右侧 | 现在这一档叫什么、大致是什么口径。描述是从档位文案里自动取的第一句，不另外维护 |
+| `✓ 已写入系统提示（每轮生效）` | 开关下方 | 插件**接上**了。如果显示 `⚠ 尚未接入 · 重启 DSH 后生效`，那是插件没加载成功，不是设置问题 |
+| `插件代码比运行时新` 黄条 | 同上 | 磁盘上的 `index.js` 比正在跑的进程新，一批改进还没生效。**这不是错误**，重启 DSH 就好 |
+| `上一轮实际注入 10/10 活泼 · 187 字 · 3 秒前` | 面板底部 | 上一轮**真的**用了哪一档、多少字。如果你刚改过档位，这里会补一句「← 你已改成 N，下一轮生效」 |
+| `看注入内容 *` | 按钮 | 调宿主的 `assemble()`，把模型这一轮会看到的系统提示原样打出来。带 `*` 是因为**每点一次都会真的组装一遍**，不是纯读 |
+
+短版提醒（`【本轮语气 X/10】` 那几行）不在系统提示里，是塞在 messages 末尾的——所以它不出现在「看注入内容」的正文里，而是在下面单独一行「生成前提醒（塞在 messages 末尾那条）」。
+
+## 档位换过的时候会多说一句
+
+你把滑块从 10 拖到 2，下一轮的开头会多一小段：
+
+> （上一轮还是 10/10，这一轮换成了 2；前面几轮的口气不要跟着学，从这一句起重新开始。）
+
+**这是故意的**。对话历史里那几轮是按旧档位写的，模型会顺着那个口吻接着说下去——不点破的话，看起来就像「档位没生效」。只在真正换档的那一轮出现，同一档连续聊不会重复。
+
+## 出问题了先看这里
+
+按症状查，比读源码快。
+
+| 症状 | 先看什么 | 通常是 |
+|---|---|---|
+| 面板找不到 | 右侧（或你拖到的那一侧）边缘有没有一条竖条 | 被拖到屏幕外了。浏览器 / Electron 里按 F12 打开控制台，执行 `localStorage.removeItem('dsh-tone.pos')`，再刷新页面，它会回到右侧居中 |
+| 拖了滑块，语气没变 | 面板里「上一轮实际用的档位」数字跟上没有 | 没跟上 = 还没发下一条消息（本来就是下一句才生效）；跟上了但语气没变 = 看下面一条 |
+| 面板显示「插件代码比运行时新」 | 黄条自己写得很清楚 | 服务端还是旧版模块，重启 DSH |
+| 显示「✓ 已写入系统提示」但语气还是没变 | 跑 `node test/diff.mjs 0 10` | 区分度 95%，文案本身没问题；那就是这一轮对话历史把语气带偏了，多聊几轮会回正 |
+| 界面文案/枚举变成英文 | 是不是换了浏览器或 WebView | 语言探测依赖 `navigator.language`，在部分 WebView 里拿不到中文 |
+| 发图/斗图在低档位还是会出现 | 面板是不是设成了 0-6 档 | 低档位会明确写「本档不使用表情」，但别的插件可能在你后面又追加了一句 |
+| `/dsh-tone/state` 返回 500 | 响应里的 `reason` 字段 | 写盘失败：盘满、没权限，或 `$DSH_HOME` 不可写 |
+| `/dsh-tone/state` 返回 `stateError` 非空 | 那个字段本身就是原因 | 状态文件坏了，插件会回落到默认值，但你之前的档位设置丢了 |
+| `/dsh-tone/state` 返回 `levelsError` 非空 | 同上 | `lib/levels.default.json` 被改坏了，正在用代码里的兜底四档 |
+
+想看全部字段的实际值，跑：
+
+```bash
+bash verify.sh
+```
+
+这个脚本会自己找端口、打出 20 多个字段、检查四种 HTTP 方法、再列一遍「哪些改动还没生效」。
 
 ## 怎么确认它真的生效了
 
@@ -95,12 +169,53 @@ curl http://127.0.0.1:<端口>/dsh-tone/inspect
   "channel": "section",
   "hasService": true,
   "hasMine": true,
+  "hasLevel": true,
+  "hasTail": true,
+  "tailIsLast": true,
+  "tailStatus": "ok",
+  "tail": { "chars": 78, "preview": "【本轮语气=10/10 活泼】…" },
   "sections": [{ "name": "dsh-tone:level", "order": 10210, "chars": 187 }],
-  "text": "【语气档位 10/10·活泼】…"
+  "text": "【语气档位 10/10·活泼】…",
+  "preStep": { "tone": 10, "name": "活泼", "chars": 75, "preview": "【本轮语气 10/10 活泼】…" }
 }
 ```
 
+| 字段 | 含义 |
+|---|---|
+| `channel` | 实际接上的通道：`section` / `context` / `none` |
+| `hasService` | 能不能拿到宿主的 `systemPrompt` 服务 |
+| `hasMine` / `hasLevel` | 档位那段在不在系统提示里（`hasMine` 是旧名，两个均为兼容保留） |
+| `hasTail` / `tailIsLast` | 收尾那句在不在、是不是最后一条 |
+| `tailStatus` | 上两个的人话结论：`ok` / `not-last` / `missing` |
+| `tail` | 收尾那句的字数与前 120 字预览 |
+| `sections` | 宿主实际组装出来的全部 section（名字 / 排序 / 字数） |
+| `text` | 我们那段的全文 |
+| `preStep` | 塞进 `messages` 末尾那条短提醒的快照（档位 / 字数 / 预览） |
+| `lastApplied` | 上一轮实际生效的档位与字数 |
+| `levelsError` / `stateError` / `writeError` | 三个已知故障点的当前错误，空字符串表示正常 |
+
 `hasMine: false` 说明这段没进系统提示，此时 `channel` 会显示实际接上的通道（`context` 或 `none`）。
+
+### 不启动 DSH 也能看效果
+
+```bash
+node test/demo.mjs 10
+```
+
+它用假 host 把三条通道完整跑一遍，把「模型这一轮会看到什么」原样打出来：每段多少字、排在谁后面、三条加起来占多少 token。
+
+```
+① systemPrompt.section()  —— 常驻，每轮都在
+[dsh-tone:level]  order=10210  383 字
+【语气档位 10/10·活泼】…
+
+② system-prompt/assemble  —— 在别人的 section 之后补一条
+  [main]  8 字
+→ [dsh-tone:tail]  75 字   ← 我们插的
+
+```
+
+改完文案或调档位逻辑，先跑这个看对不对，比重启再聊两句快得多。
 
 ---
 
@@ -133,7 +248,7 @@ root.on('agent/request', async (_payload, next) => {
 
 `LlmCallConfig extends LlmCallControls`，其中 `temperature` 可以自由替换——`provider` / `model` / `reasoningEffort` 被锁，改了就抛错。
 
-这一层比提示词有效得多：低温时模型每步都挑"最可能的那个词"，而公文腔恰恰就是最可能的说法。
+这一层比提示词有效得多：低温会把概率分布压得更尖，模型更倾向说"最可能的那个说法"——而公文腔恰恰就是默认情况下最可能的说法。高温则把这个分布摊平，才有余地换个口气。
 
 | 档位 | 温度 |
 |---|---|
@@ -177,19 +292,24 @@ root.on('agent/request', async (_payload, next) => {
 |---|---|
 | DSH Desktop | 已在 `0.2.0-rc.2` 上验证 |
 | Node | `>= 22` |
-| 用到的内部 API | `systemPrompt.section()` / `systemPrompt.context()`、`agent/request`、`webServer.register()`、`webServer.tapIndex()`、`webserver/index-inject` |
+| 用到的内部 API | `systemPrompt.section()` / `systemPrompt.context()`、`system-prompt/assemble`、`agent/request`、`webServer.register()`、`webServer.tapIndex()`、`webserver/index-inject` |
 
 ⚠️ 这些都是 DSH 的内部接口。大版本升级如果改了签名，插件会**静默失效**（不报错，但档位不再影响输出）。遇到这种情况请开 issue。
 
-插件**从不**碰 `agent/pre-step` 那条 waterfall——它的 `decision.messages` 必须是完整的 Message 结构（`content` 是块数组、带 `source.kind`、带 `id`），形状不对会让整轮直接崩溃。
+⚠️ **`agent/pre-step` 这条 waterfall 能不能碰？不能。** 它要求返回的 `decision.messages` 里每一项都是完整 Message；形状不对会让**整轮直接崩溃**。更麻烦的是：就算形状" 对"，你往里塞一条 `role: 'system'` 也会被宿主的事件类型（`user/message`）和内容对不上而崩在前端校验上。**本插件从 0.3.1 起彻底不再用它**，语气只走 `systemPrompt.section()` 和 `system-prompt/assemble` 两条通道。这个决定是用一次崩溃换来的，详情写在「四条容易踩的坑」第一条里。
 
 ---
 
 ## 已知限制
 
+> **档位效果因模型而异。** 本插件保证的是：档位文案真的写进了系统提示、写进去的时机对、温度跟着档位走、你能在面板里看到它写了什么。
+> 它**保证不了**「同一句话在 7 档和 10 档下一定能读出明显差别」——那取决于模型、提示词位置、以及对方输入的长度。
+> 如果你实测下来觉得差别不大，那不一定是插件没生效——先打开面板看「看实际生效内容」，确认文案确实进去了，再判断效果。
+
 - 档位是**全局**的，不区分会话。多窗口共用同一份状态。
 - 面板界面目前是中文硬编码。
 - 文案改动立即对所有会话生效，没有"只在当前会话用"的模式。
+- **收尾那句可能被抢走**。本插件挂了 `system-prompt/assemble`，在 `next()` 之后把 `dsh-tone:tail` 推到 sections 末尾。但如果宿主里另有插件注册了 `complete: true` 的 section，`SystemPrompt.assemble()` 会把 `sections` 整段替换成那一条（`dsh-system-prompt/src/index.ts:693`），我们推的就被丢掉了。不用自己拼两个布尔：`/dsh-tone/inspect` 的 `tailStatus` 会直接告诉你是哪一种——`ok`（就在最后）、`not-last`（在，但被别人插到了后面）、`missing`（整条都没了）。`hasTail` / `tailIsLast` 仍然在，是给旧版客户端兼容用的。三种情况里只有 `ok` 是全好；另外两种都只是少了一层保险，档位本身仍然生效。
 
 ---
 
@@ -199,12 +319,42 @@ MIT
 
 ---
 
+## 四条容易踩的坑（都是实际踩到的）
+
+**1. 别碰 `agent/pre-step`。** 这个结论是花了一次宿主崩溃换来的。
+
+那条 waterfall 要求你返回的 `decision.messages` 里每一项都是完整 Message ——
+`content` 是块数组、`source.kind` 和 `id` 都要有。塞一个 `{role:'system', content:'字符串'}` 进去，
+整轮会崩在 `Cannot read properties of undefined (reading 'kind')`（本项目在这上面崩过三次，每次都以为是返回值的问题）。
+
+第四次的形态更隐蔽：形状"对"了，但塞进去的是 `role: 'system'`，而事件类型是 `user/message`——
+两者打架，DSH 前端校验直接挂掉。当时插件在 13 分钟里往会话里塞了 63 条冲突事件，宿主整个起不来。
+
+另外两条容易漏的：**不能原地 `push`**，`decision.messages` 是深冻结的，要造新数组；
+**必须幂等**，一次回复里如果调了工具，pre-step 会跑好几趟，每趟都追加就会堆出好几条一样的指令。
+
+**结论：0.3.1 起本插件不再注册这个钩子**，语气只走 `systemPrompt.section()` + `system-prompt/assemble`。
+测试里有一条反向守卫专门盯着这个——一旦有人把它加回来，测试当场变红。
+
+**2. 别人的插件可能压在你后面。** `dsh-meme` 是在 `system-prompt/assemble` 的 `next()` 之后
+直接 `push` 到 sections 末尾的，光靠 section 的 `order` 追不上 append。所以本插件也挂了同一个钩子，
+补一句极短的 `dsh-tone:tail` 抢回末位。能不能抢到取决于插件加载顺序，不保证。
+
+**3. 快捷键要看 `ev.code` 不看 `ev.key`。** `Shift+0` 在多数键盘上产出的是 `')'`，
+用 `ev.key === '0'` 判断的话这条快捷键永远不会触发。
+
+**4. `GET` 和 `POST` 返回的字段不一样。** `GET /dsh-tone/state` 带 `channel`、`lastApplied`、`preStep`，
+而 `POST /dsh-tone/set` 只回状态本身。如果前端用一个 `applyState(d)` 同时处理两边，
+POST 之后那些字段就是 `undefined` —— 表现是「一拖滑块就说插件没生效」，而服务端明明好好的。
+本项目的做法是给 `applyState(d, isLoad)` 加个开关：只在首次 GET 时判断服务端新旧，
+POST 回来的字段缺了就不动界面已有的信息。
+
 ## 开发
 
 ```bash
 node test/smoke.mjs
 ```
 
-65 条断言，覆盖：注入通道注册、三条路由的 HTTP 语义、状态文件读写、`levelsCustom` / `tempControl` 的边界、温度全档映射、`/inspect` 自检。
+250 条断言，覆盖：注入通道注册、四条路由的 HTTP 语义（含方法限定与 405）、状态文件读写与恢复、`levelsCustom` / `tempControl` 的边界、温度全档映射、`/inspect` 自检的分通道字段、停用时清空 `lastApplied`、收尾压尾段（`dsh-tone:tail`）是否真的排在别人后面、`agent/pre-step` 钩子绝不被注册（它会把 DSH 弄崩）以及万一注册了也不得改动 messages、默认文案不得含项目专用黑话、界面说明行的长度下限（防止标题句里多写句号把描述截断）、`/set` 面对越界与畸形输入不弄坏状态、README 里的断言数与实际一致、档位边界数组与文案档数对齐（0-10 每个值都能落到某一档）、编辑区每个按钮都真的绑了点击处理、开关控件都有状态反馈（文字或样式类），以及 README 目录与实际章节一致。
 
 测试用假的 DSH host，会备份并恢复你的真实状态文件，跑完不影响正在用的配置。

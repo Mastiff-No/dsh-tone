@@ -1,7 +1,7 @@
 {
   "name": "dsh-tone",
-  "version": "0.2.22",
-  "description": "给 DSH 加一个语气档位旋钮：侧边滑一下 0-10，每轮把档位写进系统提示，Agent 的口气立刻跟着变。四档文案可自己改，也能一键停用。",
+  "version": "0.3.1",
+  "description": "给 DSH 加一个语气档位旋钮：侧边滑一下 0-10，每轮把档位写进系统提示；档位会同时影响采样温度。四档文案可自己改，也能一键停用，面板里能直接看到模型这一轮到底读到了什么。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -15,17 +15,22 @@
   "type": "module",
   "main": "lib/index.js",
   "files": [
-    "lib/index.js",
-    "lib/widget.js",
-    "lib/levels.default.json",
     "cordis.patch.yml",
-    "README.md",
-    "LICENSE",
     "icon.png",
-    "test/smoke.mjs"
+    "LICENSE",
+    "README.md",
+    "lib/index.js",
+    "lib/levels.default.json",
+    "lib/widget.js",
+    "test/smoke.mjs",
+    "test/demo.mjs",
+    "test/diff.mjs",
+    "CHANGELOG.md",
+    "verify.sh"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "dsh": ">=0.2.0-0"
   },
   "dsh": {
     "bundle": {
@@ -44,6 +49,8 @@
     "url": "https://github.com/Mastiff-No/dsh-tone/issues"
   },
   "scripts": {
-    "test": "node test/smoke.mjs"
+    "test": "node test/smoke.mjs",
+    "demo": "node test/demo.mjs",
+    "diff": "node test/diff.mjs"
   }
 }
