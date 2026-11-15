@@ -859,6 +859,18 @@ try {
     ok('两边温度表一致', wt === it, 'widget=' + wt + ' index=' + it)
   }
 
+  console.log('\n[17l7] 600 字上限的提示必须和保存逻辑一致')
+  {
+    // 编辑器本身不截断，原样把 text 发给 /dsh-tone/set；但服务端 writeState()
+    // 会走 clampLevels()，text 被 trim().slice(0, 600) 之后才写盘 —— 实测 700 字
+    // 存进去，盘上只剩 600 字。所以提示不能反过来声称「能保存，注入会变长」，
+    // 更不能让人以为超出的部分还能生效。
+    const w9 = fs.readFileSync(path.join(HERE, '..', 'lib', 'widget.js'), 'utf8')
+    ok('不再声称超出后只是变长', w9.indexOf('注入会变长') < 0)
+    ok('说清超出会被截断或只保留前 600 字',
+      w9.indexOf('截断') >= 0 || w9.indexOf('只保留前 600 字') >= 0)
+  }
+
   console.log('\n[17l6] applyState 里 renderTone 必须在 renderLast 之前')
   {
     // 顺序反了的话，第一次加载时 state.tone 还是初始值 7，
