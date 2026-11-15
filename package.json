@@ -1,6 +1,6 @@
 {
   "name": "dsh-tone",
-  "version": "0.2.0",
+  "version": "0.2.21",
   "description": "给 DSH 加一个语气档位旋钮：侧边滑一下 0-10，每轮把档位写进系统提示，Agent 的口气立刻跟着变。四档文案可自己改，也能一键停用。",
   "keywords": [
     "dsh",
@@ -17,10 +17,12 @@
   "files": [
     "lib/index.js",
     "lib/widget.js",
+    "lib/levels.default.json",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
-    "icon.png"
+    "icon.png",
+    "test/smoke.mjs"
   ],
   "engines": {
     "node": ">=22"
@@ -40,5 +42,8 @@
   "homepage": "https://github.com/Mastiff-No/dsh-tone#readme",
   "bugs": {
     "url": "https://github.com/Mastiff-No/dsh-tone/issues"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs"
   }
 }

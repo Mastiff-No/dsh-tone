@@ -24,11 +24,13 @@
 
 ## 安装
 
+**当前通过 GitHub 安装**（尚未发布到 npm）：
+
 ```bash
-dsh plugin --profile <你的 profile> add dsh-tone
+dsh plugin --profile desktop add github:Mastiff-No/dsh-tone
 ```
 
-本地开发时可以直接挂目录：
+需要 DSH 0.2.0 或更高版本。本地开发时可以直接挂目录：
 
 ```bash
 dsh plugin --profile desktop add "link:C:\path\to\dsh-tone" --save-exact
@@ -76,22 +78,79 @@ dsh plugin --profile desktop add "link:C:\path\to\dsh-tone" --save-exact
 
 ---
 
+## 怎么确认它真的生效了
+
+面板上的「看注入内容」按钮会去问宿主：**你现在组装出来的系统提示里，那一段到底是什么**。
+
+看到开头写着「来自宿主实际组装的系统提示，187 字」，就说明注入是真的——不是插件自己拼出来给你看的。
+
+也可以直接请求接口：
+
+```bash
+curl http://127.0.0.1:<端口>/dsh-tone/inspect
+```
+
+```json
+{
+  "channel": "section",
+  "hasService": true,
+  "hasMine": true,
+  "sections": [{ "name": "dsh-tone:level", "order": 10210, "chars": 187 }],
+  "text": "【语气档位 10/10·活泼】…"
+}
+```
+
+`hasMine: false` 说明这段没进系统提示，此时 `channel` 会显示实际接上的通道（`context` 或 `none`）。
+
+---
+
 ## 它怎么生效的
 
-插件调用 DSH 原生的动态上下文通道：
+三条通道，任何一条退化都不会让插件崩掉：
+
+### 1. 系统提示段落（主力）
 
 ```js
 root.inject(['systemPrompt'], (ctx) => {
-  ctx.systemPrompt.context({
-    name: 'dsh-tone',
-    order: 900,
-    interpolate: false,
+  ctx.systemPrompt.section({
+    name: 'dsh-tone:level',
+    order: getSectionOrder('DEPLOYMENT_PERSONA_SUFFIX') + 10,
     text: () => toneNote(readState()),   // 每次组装提示时求值
   })
 })
 ```
 
-宿主会把它包成一条 `<system-reminder>` 快照消息，并且**按内容去重**——档位没变就不会重复发，所以对 token 的额外开销可以忽略。
+`section()` 进的是 **system prompt 本体**，权重比 `<system-reminder>` 高。宿主没有 `section()` 时自动回落到 `context()`，效果弱一点但不会挂。
+
+### 2. 采样温度（硬杠杆）
+
+```js
+root.on('agent/request', async (_payload, next) => {
+  const config = await next()
+  return { ...config, temperature: temperatureForTone(readState().tone) }
+})
+```
+
+`LlmCallConfig extends LlmCallControls`，其中 `temperature` 可以自由替换——`provider` / `model` / `reasoningEffort` 被锁，改了就抛错。
+
+这一层比提示词有效得多：低温时模型每步都挑"最可能的那个词"，而公文腔恰恰就是最可能的说法。
+
+| 档位 | 温度 |
+|---|---|
+| 0–3 | 0.45 |
+| 4–6 | 0.72 |
+| 7–8 | 0.95 |
+| 9–10 | 1.12 |
+
+**默认不接管采样。** 面板上「采样温度」那行默认写着「未跟随」——插件不会去动你自己调好的 temperature。想让它跟着档位走，点那行一下，变成「跟随档位」；再点一下松开。
+
+理由很简单：采样温度是你精心调出来的，插件不该一声不响替你改。只有你明确点了「跟随」，它才接管。
+
+停用插件或关掉「跟随」，温度立刻恢复宿主原值。
+
+### 3. 档位文案（热加载）
+
+四档默认文案在 `lib/levels.default.json`，每一轮现读现用。改它**不需要重启 DSH**，下一轮就生效。
 
 状态存在 `$DSH_HOME/dsh-tone.json`：
 
@@ -100,17 +159,15 @@ root.inject(['systemPrompt'], (ctx) => {
   "enabled": true,
   "tone": 7,
   "pos": { "side": "right", "y": 0.5 },
-  "levels": [
-    { "name": "公事公办", "text": "……" },
-    { "name": "克制", "text": "……" },
-    { "name": "自然", "text": "……" },
-    { "name": "活泼", "text": "……" }
-  ],
+  "levelsCustom": false,
+  "tempControl": false,
   "updatedAt": "2026-11-14T15:16:08.404Z"
 }
 ```
 
-直接改这个文件也行，刷新页面就能读到。
+`levelsCustom: true` 表示你在面板里改过文案；`false` 表示用 `levels.default.json` 的默认值。
+
+`tempControl: true` 才允许插件接管采样温度，默认 `false`。
 
 ---
 
@@ -120,11 +177,11 @@ root.inject(['systemPrompt'], (ctx) => {
 |---|---|
 | DSH Desktop | 已在 `0.2.0-rc.2` 上验证 |
 | Node | `>= 22` |
-| 用到的内部 API | `systemPrompt.context()`、`webServer.register()`、`webServer.tapIndex()`、`webserver/index-inject` |
+| 用到的内部 API | `systemPrompt.section()` / `systemPrompt.context()`、`agent/request`、`webServer.register()`、`webServer.tapIndex()`、`webserver/index-inject` |
 
-⚠️ `systemPrompt.context()` 属于 DSH 内部接口。如果 DSH 大版本升级改了签名，插件会**静默失效**（不报错，但档位不再影响输出）。遇到这种情况请开 issue。
+⚠️ 这些都是 DSH 的内部接口。大版本升级如果改了签名，插件会**静默失效**（不报错，但档位不再影响输出）。遇到这种情况请开 issue。
 
-插件**从不**碰 `agent/pre-step` 那条 waterfall——它的 `decision.messages` 必须是完整的 Message 结构，形状不对会让整轮直接崩溃。
+插件**从不**碰 `agent/pre-step` 那条 waterfall——它的 `decision.messages` 必须是完整的 Message 结构（`content` 是块数组、带 `source.kind`、带 `id`），形状不对会让整轮直接崩溃。
 
 ---
 
@@ -139,3 +196,15 @@ root.inject(['systemPrompt'], (ctx) => {
 ## License
 
 MIT
+
+---
+
+## 开发
+
+```bash
+node test/smoke.mjs
+```
+
+65 条断言，覆盖：注入通道注册、三条路由的 HTTP 语义、状态文件读写、`levelsCustom` / `tempControl` 的边界、温度全档映射、`/inspect` 自检。
+
+测试用假的 DSH host，会备份并恢复你的真实状态文件，跑完不影响正在用的配置。
