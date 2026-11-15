@@ -24,10 +24,10 @@
 
 ## 安装
 
-**当前通过 GitHub 安装**（尚未发布到 npm）：
+**从 npm 安装**（[dsh-tone](https://www.npmjs.com/package/dsh-tone)）：
 
 ```bash
-dsh plugin --profile desktop add github:Mastiff-No/dsh-tone
+dsh plugin --profile desktop add dsh-tone
 ```
 
 需要 DSH 0.2.0 或更高版本。本地开发时可以直接挂目录：

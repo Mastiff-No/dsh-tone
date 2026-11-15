@@ -5,3 +5,6 @@ node_modules/
 .DS_Store
 Thumbs.db
 _bak/
+
+# 本地 npm 凭据（含 token），绝不提交
+.npmrc
