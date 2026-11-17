@@ -1,6 +1,6 @@
 {
   "name": "dsh-tone",
-  "version": "0.3.2",
+  "version": "0.5.3",
   "description": "给 DSH 加一个语气档位旋钮：侧边滑一下 0-10，每轮把档位写进系统提示；档位会同时影响采样温度。四档文案可自己改，也能一键停用，面板里能直接看到模型这一轮到底读到了什么。",
   "keywords": [
     "dsh",
@@ -21,6 +21,7 @@
     "README.md",
     "lib/index.js",
     "lib/levels.default.json",
+    "lib/sets.default.json",
     "lib/widget.js",
     "test/smoke.mjs",
     "test/demo.mjs",

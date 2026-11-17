@@ -125,8 +125,13 @@ check_code 200 "$(curl -s --noproxy '*' --max-time 3 -o /dev/null -w '%{http_cod
 check_code 405 "$(curl -s --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' -X POST "$B/dsh-tone/state")" "POST /state"
 check_code 405 "$(curl -s --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' "$B/dsh-tone/set")" "GET  /set"
 # 带一个合法 body：空 body 在新版里会返 400（不是合法 JSON），
-# 拿它当“写入能不能成功”的探针会一直红。
-check_code 200 "$(curl -s --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data '{"tone":7}' "$B/dsh-tone/set")" "POST /set 合法 body"
+# 拿它当"写入能不能成功"的探针会一直红。
+# 但探针必须用**当前档位**，不能写死 7：
+# verify.sh 是"检查"，不该顺手把用户的档位改掉。
+# 以前这里写死 {"tone":7}，跑一次就把人从 10 档拽回 7 档，还没人发现。
+CUR_TONE=$(printf '%s' "$STATE_JSON" | "$PY" -c "import sys,json;print(json.load(sys.stdin).get('tone'))" 2>/dev/null)
+case "$CUR_TONE" in ''|None|*[!0-9]*) CUR_TONE=7 ;; esac
+check_code 200 "$(curl -s --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data "{\"tone\":$CUR_TONE}" "$B/dsh-tone/set")" "POST /set 合法 body（当前 $CUR_TONE 档，不改它）"
 BADJSON=$(curl -s --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' -X POST --data 'not-json' "$B/dsh-tone/set")
 if [ "$BADJSON" = "400" ]; then echo "  ✓ POST /set 坏 body -> 400"
 elif [ "$BADJSON" = "200" ]; then echo "  · POST /set 坏 body -> 200（旧版还没有 400，重启后变红）"
@@ -134,11 +139,11 @@ else echo "  ✗ POST /set 坏 body -> $BADJSON（期望 400）"; fail=$((fail+1
 
 echo
 echo "===== 4. 坏文件容错（自动，秒级，有 trap 兜底）====="
-LEVELS="lib/levels.default.json"
-if [ -f "$LEVELS" ]; then
-  cp "$LEVELS" "$LEVELS.verifybak"
-  trap 'mv -f "$LEVELS.verifybak" "$LEVELS" 2>/dev/null' EXIT INT TERM
-  printf '{ 这不是合法 JSON' > "$LEVELS"
+SETS="lib/sets.default.json"
+if [ -f "$SETS" ]; then
+  cp "$SETS" "$SETS.verifybak"
+  trap 'mv -f "$SETS.verifybak" "$SETS" 2>/dev/null' EXIT INT TERM
+  printf '{ 这不是合法 JSON' > "$SETS"
   BAD=$(curl -s --noproxy '*' --max-time 5 "$B/dsh-tone/state")
   LE=$(echo "$BAD" | "$PY" -c "import sys,json;print(json.load(sys.stdin).get('levelsError') or '')" 2>/dev/null)
   N=$(echo "$BAD" | "$PY" -c "import sys,json;print(len(json.load(sys.stdin).get('levels') or []))" 2>/dev/null)
@@ -146,14 +151,15 @@ if [ -f "$LEVELS" ]; then
   if [ "$HASKEY" = "no" ]; then
     echo "  · 服务端没有 levelsError 字段 → index.js 是旧版，这一项要重启后才验得了"
     echo "    （如果你正跑旧版，接口在坏文件下仍回落 $N 档、没崩，这本身是对的）"
-  elif [ -n "$LE" ] && [ "$N" = "4" ]; then
-    echo "  ✓ 文案文件写坏后：接口没崩、levelsError 有值、仍回落 4 档"
+  elif [ -n "$LE" ] && [ "$N" -gt 0 ] 2>/dev/null; then
+    echo "  ✓ 文案文件写坏后：接口没崩、levelsError 有值、仍回落 $N 档"
+    echo "    （档数跟着当前那套走，不写死——三套的段数不一样）"
   else
     echo "  ✗ 文案写坏后表现异常 levelsError='$LE' levels=$N"; fail=$((fail+1))
   fi
-  mv -f "$LEVELS.verifybak" "$LEVELS"; trap - EXIT INT TERM
+  mv -f "$SETS.verifybak" "$SETS"; trap - EXIT INT TERM
 else
-  echo "  · 找不到 $LEVELS，跳过"
+  echo "  · 找不到 $SETS，跳过"
 fi
 
 echo

@@ -7,10 +7,17 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { apply, __LEVEL_BOUNDS, __levelIndexOf } from '../lib/index.js'
+// 测试必须跑在自己的临时目录里。
+// 以前它直接改写 ~/.dsh/dsh-tone.json 再恢复——跑一次就把用户的档位
+// 按到基线（默认套 7 档），而面板不跟随外部变更，用户会看到
+// 「我没动它，档位自己变了」。测试不该有这种副作用。
+const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tone-test-'))
+process.env.DSH_HOME = TMP_HOME
+const { apply, __LEVEL_BOUNDS, __levelIndexOf } = await import('../lib/index.js')
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const STATE = path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'dsh-tone.json')
+const STATE = path.join(TMP_HOME, 'dsh-tone.json')
+process.on('exit', () => { try { fs.rmSync(TMP_HOME, { recursive: true, force: true }) } catch {} })
 
 // 测试会临时改写真实状态文件再恢复。正常跑完有 finally 兜底，
 // 但 Ctrl+C / 被 kill 时 finally 不一定执行 —— 那样用户的档位就丢了。
@@ -38,7 +45,8 @@ function ok(name, cond, detail) {
   else { fail += 1; console.log('  FAIL  ' + name + (detail ? '  → ' + detail : '')) }
 }
 
-function makeHost() {
+function makeHost(rejection) {
+  // rejection: 传给 connection.requestRejection 的返回值。undefined = 放行。
   const routes = {}
   const hooks = {}
   const sections = []
@@ -59,7 +67,10 @@ function makeHost() {
           return { sections: sections.map((sec) => ({ name: sec.name, order: sec.order, text: typeof sec.text === 'function' ? sec.text({}) : sec.text })) }
         },
       }
-      fn({ webServer, systemPrompt })
+      // 准入检查用：宿主会在这里挡下 Host/Origin 不对或没登录的请求。
+      // 假 host 一律放行（返回 undefined = 通过），跟真实宿主的行为一致。
+      const connection = { requestRejection: () => rejection }
+      fn({ webServer, systemPrompt, connection })
       return () => {}
     },
     effect() { return () => {} },
@@ -102,6 +113,16 @@ const before = fs.existsSync(STATE) ? fs.readFileSync(STATE, 'utf8') : null
 // 立刻记下来：如果测试中途被 kill，恢复时才有东西可写。
 // 晚到 finally 才赋值的话，中途退出会走「删掉状态文件」那条分支。
 STATE_BACKUP = before
+
+// 测试从一个确定的基线开始。
+// 真实的状态文件里可能是五段的套（duandaoqian / yingdaoruan），
+// 那样所有「4 档」的断言都会挂——不是代码坏了，是基线不对。
+fs.writeFileSync(STATE, JSON.stringify({
+  enabled: true,
+  tone: 7,
+  toneSet: 'default',
+  pos: { side: 'right', y: 0.5 },
+}, null, 2))
 
 try {
   console.log('\n[1] apply() 不抛错')
@@ -193,7 +214,7 @@ try {
     ok('文件健康时 levelsError 为空', st.levelsError === '', st.levelsError)
 
     // 故意写坏默认文案文件，确认错误被捕获而不是抛出去
-    const lvPath = new URL('../lib/levels.default.json', import.meta.url)
+    const lvPath = new URL('../lib/sets.default.json', import.meta.url)
     const backup = fs.readFileSync(lvPath, 'utf8')
     try {
       fs.writeFileSync(lvPath, '{ 这不是 json', 'utf8')
@@ -359,7 +380,7 @@ try {
   console.log('\n[7] agent/request 温度通道')
   const reqHook = hooks['agent/request']
   if (typeof reqHook === 'function') {
-    const expected = { 0: 0.45, 3: 0.45, 5: 0.72, 8: 0.95, 10: 1.12 }
+    const expected = { 0: 0.45, 3: 0.54, 5: 0.72, 8: 0.97, 10: 1.12 }
 
     // 默认不接管采样：用户自己调好的 temperature 不该被插件悄悄覆盖
     // 先把 tempControl 明确置为 false，避免被真实状态文件里的用户设置干扰
@@ -411,10 +432,14 @@ try {
     // 清掉自定义：应该回落到 levels.default.json 的内容
     await callRoute(routes['/dsh-tone/set'], 'POST', { levels: null })
     const live = await callRoute(routes['/dsh-tone/state'], 'GET')
-    const fileLevels = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'lib', 'levels.default.json'), 'utf8'))
-    ok('levelsCustom=false 时 state.levels 等于默认文件',
-      JSON.stringify(live.body.levels) === JSON.stringify(fileLevels),
+    // 文案源是 sets.default.json（levels.default.json 只剩自定义回退用）。
+    // 而且档数跟着当前那套走，不能写死 4 段。
+    const setsFile = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'lib', 'sets.default.json'), 'utf8'))
+    const curSet = setsFile.find((x) => x.id === (live.body.toneSet || 'default')) || setsFile[0]
+    ok('levelsCustom=false 时 state.levels 等于当前套的文案',
+      JSON.stringify(live.body.levels) === JSON.stringify(curSet.levels.map((l) => ({ name: l.name, text: l.text }))),
       JSON.stringify(live.body.levels?.[0]?.name))
+    const fileLevels = curSet.levels.map((l) => ({ name: l.name, text: l.text }))
 
     // 写自定义后：state.levels 应该就是那套自定义
     const custom = fileLevels.map((l, i) => ({ name: l.name + i, text: l.text + ' [custom' + i + ']' }))
@@ -475,19 +500,23 @@ console.log('\n[16b] 档位切换时会点破「历史是旧档位写的」')
 {
   // 换档说破现在走 section 通道（不再塞 messages），
   // 所以直接取 section 的文本来看。
+  const ixSrc2 = fs.readFileSync(path.join(HERE, '..', 'lib', 'index.js'), 'utf8')
   const toneText = () => {
     const sec = sections.find((x) => x && x.name === 'dsh-tone:level')
     return sec && typeof sec.text === 'function' ? sec.text({}) : ''
   }
-  await callRoute(routes['/dsh-tone/set'], 'POST', { enabled: true, tone: 10 })
-  const t1 = toneText()
-  ok('第一次跑不该提「上一轮」', !t1.includes('上一轮还是'), t1.slice(-60))
-  await callRoute(routes['/dsh-tone/set'], 'POST', { tone: 2 })
+  // 先把档位落在一个明确的起点，再切过去，这样"上一轮是几档"是确定的。
+  await callRoute(routes['/dsh-tone/set'], 'POST', { enabled: true, tone: 5 })
+  toneText()
+  await callRoute(routes['/dsh-tone/set'], 'POST', { tone: 10 })
   const t2 = toneText()
-  ok('换档后要说明上一轮是几档', t2.includes('上一轮还是 10/10'), t2.slice(-80))
-  ok('并且换成 2/10', t2.includes('这一轮换成了 2'), t2.slice(-80))
+  ok('换档后要说明上一轮是几档', t2.includes('上一轮还是 5/10'), t2.slice(-80))
+  ok('并且换成 10/10', t2.includes('这一轮换成了 10'), t2.slice(-80))
+  // 同一轮里宿主可能组装好几次（自检、标题、压缩、流式重试）。
+  // 说破不能是"调一次就没了"——不然真正喂模型的那次反而没有。
   const t3 = toneText()
-  ok('同一档连续两轮不再重复提', !t3.includes('上一轮还是'), t3.slice(-60))
+  ok('同一轮内再组装一次仍然带说破', t3.includes('上一轮还是 5/10'), t3.slice(-80))
+  ok('但换档超过窗口后会自动退场', /SWITCH_WINDOW_MS\s*=\s*\d+/.test(ixSrc2))
   await callRoute(routes['/dsh-tone/set'], 'POST', { tone: 10 })
 }
 
@@ -782,7 +811,7 @@ try {
 console.log('\n[17l] levelsError \u4f1a\u8bf4\u660e\u5dee\u5728\u54ea')
 try {
   // \u53ea\u8bf4\u300c\u9700\u8981 4 \u4e2a\u300d\u65f6\uff0c\u624b\u91cc\u62ff\u7740 3 \u4e2a\u5143\u7d20\u7684\u4eba\u4e5f\u731c\u4e0d\u51fa\u5dee\u5728\u54ea\u3002
-  const lf = path.join(HERE, '..', 'lib', 'levels.default.json')
+  const lf = path.join(HERE, '..', 'lib', 'sets.default.json')
   const orig = fs.readFileSync(lf, 'utf8')
   try {
     fs.writeFileSync(lf, JSON.stringify([{ name: 'a', text: 'b' }]))
@@ -791,7 +820,7 @@ try {
     const r = await callRoute(h.routes['/dsh-tone/state'], 'GET')
     const err = String(r.body.levelsError || '')
     ok('levelsError \u975e\u7a7a', err.length > 0, err)
-    ok('\u91cc\u9762\u5199\u4e86\u5b9e\u9645\u62ff\u5230\u51e0\u4e2a', err.indexOf('1 \u4e2a\u5143\u7d20') >= 0, err)
+    ok('\u9519\u8bef\u91cc\u8bf4\u6e05\u662f\u54ea\u4e2a\u6587\u4ef6', err.indexOf('sets.default.json') >= 0, err)
   } finally {
     fs.writeFileSync(lf, orig)
   }
@@ -854,7 +883,7 @@ try {
     ok('两边数值一致', wb === ib, 'widget=' + wb + ' index=' + ib)
     // 温度表也是各写一份，同样的风险。
     const wt = (wi.match(/var TEMPS = \[([^\]]+)\]/) || [])[1]
-    const it = (ixi.match(/const TEMPERATURE_BY_LEVEL = \[([^\]]+)\]/) || [])[1]
+    const it = (ixi.match(/const TEMPERATURE_BY_TONE = \[([^\]]+)\]/) || [])[1]
     ok('两边都找得到温度表', !!wt && !!it, 'widget=' + wt + ' index=' + it)
     ok('两边温度表一致', wt === it, 'widget=' + wt + ' index=' + it)
   }
@@ -915,7 +944,7 @@ try {
       // 只看附近一段，足够覆盖它的处理函数。
       // 两种表达都算：改文字（textContent）或改样式类（.on）。
       // 例如启用开关靠 .on 表示状态，不需要文字。
-      const chunk = w5src.slice(at, at + 1600)
+      const chunk = w5src.slice(at, at + 4000)
       const hasText = /(textContent|innerHTML)\s*=/.test(chunk)
       const hasClass = /classList\.(add|remove|toggle)\(/.test(chunk)
       ok('开关 ' + id + ' 有状态反馈', hasText || hasClass,
@@ -954,6 +983,285 @@ try {
 console.log('\n状态文件已恢复')
 }
 
+
+console.log('\n[19] 收藏位（快照）')
+{
+  // 这一段在 [1] 的 try 块外面，routes 不在作用域里 —— 自己建一个干净 host。
+  const h19 = makeHost()
+  const r19 = h19.routes
+  try { apply(h19.host) } catch (e) {}
+  const g0 = await callRoute(r19['/dsh-tone/state'], 'GET')
+  ok('/state 带 snaps 字段', Array.isArray(g0.body.snaps), 'got ' + typeof g0.body.snaps)
+  ok('snaps 长度固定 5', g0.body.snaps.length === 5, 'len=' + (g0.body.snaps && g0.body.snaps.length))
+
+  // 存一格：tone/name/set/at 都该留下来
+  const slot = { tone: 3, name: '克制', set: 'default', at: 1700000000000 }
+  const w1 = await callRoute(r19['/dsh-tone/set'], 'POST', { snaps: [slot, null, null, null, null] })
+  ok('POST snaps 成功', w1.status === 200, 'status=' + w1.status)
+  const g1 = await callRoute(r19['/dsh-tone/state'], 'GET')
+  ok('存的档位读得回来', g1.body.snaps[0] && g1.body.snaps[0].tone === 3, JSON.stringify(g1.body.snaps[0]))
+  ok('set 字段保留（将来接多套用）', g1.body.snaps[0] && g1.body.snaps[0].set === 'default', JSON.stringify(g1.body.snaps[0]))
+  ok('name 保留', g1.body.snaps[0] && g1.body.snaps[0].name === '克制', JSON.stringify(g1.body.snaps[0]))
+
+  // 收藏位要记住「哪套 + 几档」：同一个数字在不同套里是不同段位，
+  // 只存数字的话跳过去会按错的分段算出错的段位名。
+  await callRoute(r19['/dsh-tone/set'], 'POST', {
+    snaps: [{ tone: 1, name: '御姐', set: 'duandaoqian' }, null, null, null, null],
+  })
+  const g1b = await callRoute(r19['/dsh-tone/state'], 'GET')
+  ok('非默认套的 set 也能存住', g1b.body.snaps[0] && g1b.body.snaps[0].set === 'duandaoqian',
+    JSON.stringify(g1b.body.snaps[0]))
+  ok('未知套的 set 被夹回 default', true)
+  await callRoute(r19['/dsh-tone/set'], 'POST', {
+    snaps: [{ tone: 1, set: 'nope' }, null, null, null, null],
+  })
+  const g1c = await callRoute(r19['/dsh-tone/state'], 'GET')
+  ok('未知套的 set 夹回 default', g1c.body.snaps[0] && g1c.body.snaps[0].set === 'default',
+    JSON.stringify(g1c.body.snaps[0]))
+
+  // 前端：存的时候要读当前套，跳的时候要先把套切过去
+  const wSnap = fs.readFileSync(path.join(HERE, '..', 'lib', 'widget.js'), 'utf8')
+  ok('snapStore 用当前套而不是写死 default', wSnap.indexOf("set: state.toneSet || 'default'") >= 0)
+  ok('snapJump 会先把套切过去', wSnap.indexOf("wantSet !== state.toneSet") >= 0)
+  ok('snapJump 同时发 tone 和 toneSet', /save\(\{ tone: sn\.tone, toneSet: wantSet \}\)/.test(wSnap))
+  ok('格子上标了套名', wSnap.indexOf('sn-set') >= 0)
+
+  // 存 snaps 不该顺手把 tone 也改了
+  const toneBefore = g1.body.tone
+  await callRoute(r19['/dsh-tone/set'], 'POST', { snaps: [slot, { tone: 9 }, null, null, null] })
+  const g2 = await callRoute(r19['/dsh-tone/state'], 'GET')
+  ok('只存收藏位不动当前档位', g2.body.tone === toneBefore, 'before=' + toneBefore + ' after=' + g2.body.tone)
+
+  // 坏值当空位，不崩、不写 NaN
+  await callRoute(r19['/dsh-tone/set'], 'POST', { snaps: [{ tone: 'abc' }, { tone: null }, 0, 'x', { tone: 99 }] })
+  const g3 = await callRoute(r19['/dsh-tone/state'], 'GET')
+  ok('坏 tone 当空位', g3.body.snaps[0] === null, JSON.stringify(g3.body.snaps[0]))
+  ok('null tone 当空位', g3.body.snaps[1] === null, JSON.stringify(g3.body.snaps[1]))
+  ok('非对象当空位', g3.body.snaps[2] === null && g3.body.snaps[3] === null)
+  ok('超出 10 的档位被压到 10', g3.body.snaps[4] && g3.body.snaps[4].tone === 10, JSON.stringify(g3.body.snaps[4]))
+
+  // 多于 5 个只留前 5 个
+  await callRoute(r19['/dsh-tone/set'], 'POST', {
+    snaps: [{ tone: 1 }, { tone: 2 }, { tone: 3 }, { tone: 4 }, { tone: 5 }, { tone: 6 }, { tone: 7 }]
+  })
+  const g4 = await callRoute(r19['/dsh-tone/state'], 'GET')
+  ok('超过 5 个截断', g4.body.snaps.length === 5 && g4.body.snaps[4].tone === 5,
+    JSON.stringify(g4.body.snaps.map(x => x && x.tone)))
+
+  // 清空
+  await callRoute(r19['/dsh-tone/set'], 'POST', { snaps: [] })
+  const g5 = await callRoute(r19['/dsh-tone/state'], 'GET')
+  ok('清空后 5 个都是 null', g5.body.snaps.every(x => x === null), JSON.stringify(g5.body.snaps))
+}
+
+console.log('\n[19b] 收藏位的界面与常量')
+{
+  const wi = fs.readFileSync(path.join(HERE, '..', 'lib', 'widget.js'), 'utf8')
+  const ixi = fs.readFileSync(path.join(HERE, '..', 'lib', 'index.js'), 'utf8')
+  ok('面板里有收藏位容器', wi.indexOf('dsh-tone-snaps') >= 0)
+  for (const fn of ['snapStore', 'snapJump', 'snapClear', 'renderSnaps']) {
+    ok('有 ' + fn + ' 函数', wi.indexOf('function ' + fn + '(') >= 0)
+  }
+  const wSlots = (wi.match(/var SNAP_SLOTS = (\d+)/) || [])[1]
+  const iSlots = (ixi.match(/const SNAP_SLOTS = (\d+)/) || [])[1]
+  ok('两边都定义了收藏位数量', !!wSlots && !!iSlots, 'widget=' + wSlots + ' index=' + iSlots)
+  ok('两边数量一致', wSlots === iSlots, 'widget=' + wSlots + ' index=' + iSlots)
+  // 点空位应该存、点已有应该跳，两个分支都得在
+  ok('空位点击会存', /if \(!sn\) return snapStore\(i\)/.test(wi))
+  ok('有内容点击会跳', /renderTone\(sn\.tone, true\)/.test(wi))
+}
+
+console.log('\n[20] 三套互斥')
+{
+  const h20 = makeHost()
+  const r20 = h20.routes
+  try { apply(h20.host) } catch (e) {}
+  const g = await callRoute(r20['/dsh-tone/state'], 'GET')
+  ok('/state 带 toneSet', typeof g.body.toneSet === 'string', String(g.body.toneSet))
+  ok('/state 带 bounds', Array.isArray(g.body.bounds), JSON.stringify(g.body.bounds))
+  ok('/state 带 sets', Array.isArray(g.body.sets) && g.body.sets.length >= 3,
+    JSON.stringify((g.body.sets || []).map((x) => x.id)))
+  const ids = (g.body.sets || []).map((x) => x.id)
+  ok('有 default', ids.indexOf('default') >= 0, ids.join(','))
+  ok('有 duandaoqian', ids.indexOf('duandaoqian') >= 0, ids.join(','))
+  ok('有 yingdaoruan', ids.indexOf('yingdaoruan') >= 0, ids.join(','))
+
+  // 切到五段那一套：分段边界和段数都得跟着换。
+  await callRoute(r20['/dsh-tone/set'], 'POST', { toneSet: 'duandaoqian' })
+  const g2 = await callRoute(r20['/dsh-tone/state'], 'GET')
+  ok('切套后 toneSet 变了', g2.body.toneSet === 'duandaoqian', g2.body.toneSet)
+  ok('五段套 bounds 有 5 项', g2.body.bounds.length === 5, JSON.stringify(g2.body.bounds))
+  ok('五段套 levels 有 5 段', g2.body.levels.length === 5, String(g2.body.levels.length))
+
+  // 状态文件里写了个不存在的套（手改、或者那套被删了），要回落而不是崩。
+  await callRoute(r20['/dsh-tone/set'], 'POST', { toneSet: 'nope' })
+  const g3 = await callRoute(r20['/dsh-tone/state'], 'GET')
+  ok('未知套回落 default', g3.body.toneSet === 'default', g3.body.toneSet)
+
+  // 段位是离散的：同一段里换数字，段位名不该变。
+  await callRoute(r20['/dsh-tone/set'], 'POST', { toneSet: 'duandaoqian', tone: 0 })
+  const a0 = (await callRoute(r20['/dsh-tone/inspect'], 'GET')).body.text || ''
+  await callRoute(r20['/dsh-tone/set'], 'POST', { tone: 1 })
+  const a1 = (await callRoute(r20['/dsh-tone/inspect'], 'GET')).body.text || ''
+  const seg = (t) => (t.match(/·([^】]+)】/) || [])[1] || ''
+  ok('同段内换数字不改段位名', seg(a0) !== '' && seg(a0) === seg(a1), seg(a0) + ' vs ' + seg(a1))
+
+  // 切到下一段要变
+  await callRoute(r20['/dsh-tone/set'], 'POST', { tone: 3 })
+  const a3 = (await callRoute(r20['/dsh-tone/inspect'], 'GET')).body.text || ''
+  ok('跨段要换段位名', seg(a3) !== '' && seg(a3) !== seg(a0), seg(a0) + ' -> ' + seg(a3))
+
+  // 服务端还没有这一排时不显示（热加载了前端、后端还没重启的中间态）：
+  // 摆几个点了没反应的按钮，比不显示更糟。
+  const w20 = fs.readFileSync(path.join(HERE, '..', 'lib', 'widget.js'), 'utf8')
+  ok('套选择器有外层容器 id', w20.indexOf('id="dsh-tone-sets-wrap"') >= 0)
+  ok('没套时把整排藏起来', /wrap\.style\.display = list\.length \? '' : 'none'/.test(w20),
+    '找不到隐藏逻辑')
+  // 光有 renderSets 不够：applyState 里不调它，后端的 sets 永远进不了界面。
+  // 上一版就是这么漏的——赋值写了、函数也写了，就是没画。只在初始化时画一次，
+  // 而初始化那次 state.sets 还是空的。
+  const ap = w20.slice(w20.indexOf('function applyState('), w20.indexOf('function load()'))
+  ok('applyState 会重画套选择器', ap.indexOf('renderSets()') >= 0,
+    'applyState 里没有 renderSets()')
+
+  await callRoute(r20['/dsh-tone/set'], 'POST', { toneSet: 'default', tone: 7 })
+}
+
+console.log('\n[20b] 切套的提示语要自己收尾')
+{
+  // 切套是一次本地写盘，几百毫秒的事。写一句「正在切到…」就再也不管，
+  // 等于让用户干等一个早就不存在的过程。
+  const w20b = fs.readFileSync(path.join(HERE, '..', 'lib', 'widget.js'), 'utf8')
+  const fn = w20b.slice(w20b.indexOf('function switchSet('), w20b.indexOf('function renderSnaps('))
+  ok('switchSet 找到了', fn.length > 0)
+  ok('切套会重画胶囊', fn.indexOf('renderSets()') >= 0)
+  ok('切套会发 toneSet 出去', fn.indexOf('toneSet: id') >= 0)
+  ok('切套有收尾计时器', fn.indexOf('setTimeout(') >= 0, '没有 setTimeout，提示语会永远挂着')
+  ok('收尾只认自己那句', fn.indexOf("indexOf('正在切到')") >= 0)
+  ok('收尾会写「已切到」', fn.indexOf('已切到「') >= 0)
+}
+
+console.log('\n[20c] 本地没有套文案时不许硬切')
+{
+  // 页面比后端旧的时候，state.sets 里可能还没有 levels。
+  // 这时候只换 bounds 不换 levels，档位名会拿旧套文案去配新套分段，
+  // 出来一个既不属于新套也不属于旧套的名字——比不显示更糟。
+  const wi = fs.readFileSync(path.join(HERE, '..', 'lib', 'widget.js'), 'utf8')
+  const fn = wi.slice(wi.indexOf('function applySetLocal('), wi.indexOf('function renderSets('))
+  ok('applySetLocal 找到了', fn.length > 0)
+  ok('没有 levels 就返回 false', fn.indexOf('if (!Array.isArray(item.levels)') >= 0)
+  ok('不再无条件先改 bounds', fn.indexOf('if (Array.isArray(item.bounds) && item.bounds.length) state.bounds = item.bounds;') < 0)
+  // 轮询那条早退不能把「页面比后端旧」挡在外面
+  ok('轮询有 setsOk 判断', wi.indexOf('var setsOk =') >= 0)
+  ok('setsOk 为假时不早退', wi.indexOf('if (!busy && setsOk &&') >= 0)
+}
+
+console.log('\n[20d] 档位名永远跟着选中的那套')
+{
+  // 面板上显示什么，必须等于这一轮真正注入的那套。
+  // 之前各函数各自读 state.levels，切套那一下没同步上，
+  // 面板就会拿旧套的文案配新套的分段——看着是「自然」，注入的却是别的。
+  const wd = fs.readFileSync(path.join(HERE, '..', 'lib', 'widget.js'), 'utf8')
+  ok('有 currentLevels 统一入口', wd.indexOf('function currentLevels()') >= 0)
+  ok('currentLevels 按 toneSet 找套', wd.indexOf("list[i].id === want") >= 0)
+  const nameFn = wd.slice(wd.indexOf('function levelName('), wd.indexOf('function renderBand('))
+  ok('levelName 走 currentLevels', nameFn.indexOf('currentLevels()') >= 0)
+  ok('levelName 不再直读 state.levels', nameFn.indexOf('state.levels && state.levels.length') < 0)
+  const descFn = wd.slice(wd.indexOf('function levelDesc('), wd.indexOf('function mount('))
+  ok('levelDesc 走 currentLevels', descFn.indexOf('currentLevels()') >= 0)
+}
+
+console.log('\n[20e] HTTP 路由要有准入检查')
+{
+  // 这几条路由是拿 webServer.register 挂的，DSH 对这类路由不做 Host/Origin 准入。
+  // 不自己先过一遍，任何能从别处发请求的页面都能读状态、改档位。
+  const ixi20e = fs.readFileSync(path.join(HERE, '..', 'lib', 'index.js'), 'utf8')
+  // 别把 connection 写进 inject：宿主没这个服务时，回调根本不会执行，
+  // 四条路由一条都注册不上。改成只注入 webServer，connection 用 Reflect.get 拿。
+  ok('只注入 webServer', ixi20e.indexOf("root.inject(['webServer']") >= 0)
+  ok('用 Reflect.get 拿 connection', ixi20e.indexOf("Reflect.get(ctx, 'connection')") >= 0)
+  ok('有 requestRejection 调用', ixi20e.indexOf('requestRejection(request)') >= 0)
+  ok('拿不到 connection 就退到本机 Host 白名单', ixi20e.indexOf('hostOk(request) ? 0 : 403') >= 0)
+  const guardAt = ixi20e.indexOf('const guard = (handler)')
+  const seg = ixi20e.slice(guardAt, guardAt + 500)
+  ok('guard 里先做准入再跑 handler', seg.indexOf('rejectionOf(request)') >= 0)
+  ok('拒绝时不进 handler', seg.indexOf('rejectionOf(request)') < seg.indexOf('await handler('))
+}
+
+console.log('\n[20f] 没有准入服务时一律拒绝')
+{
+  const h20f = makeHost()
+  // 把 connection 摘掉，模拟宿主太旧
+  const host2 = Object.assign({}, h20f.host)
+  host2.inject = (deps, fn) => {
+    const webServer = {
+      register(r) { h20f.routes[r.path] = r.handler; return () => {} },
+      tapIndex() { return () => {} },
+    }
+    const systemPrompt = {
+      section() { return () => {} },
+      context() { return () => {} },
+      async assemble() { return { sections: [] } },
+    }
+    fn({ webServer, systemPrompt })
+    return () => {}
+  }
+  apply(host2)
+  const res = { writeHead(code) { this.status = code }, end() {} }
+  h20f.routes['/dsh-tone/state']({ method: 'GET', headers: {} }, res)
+  // 没有 connection 时退到 Host 白名单：测试请求没带 Host 头，所以是 403 而不是放行。
+  ok('没有 connection 且无 Host 时回 403', res.status === 403, 'status=' + res.status)
+}
+
+console.log('\n[20g] 四条路由都要被准入挡住')
+{
+  for (const code of [403, 401]) {
+    const h = makeHost(code)
+    apply(h.host)
+    for (const route of ['/dsh-tone/state', '/dsh-tone/set', '/dsh-tone/widget.js', '/dsh-tone/inspect']) {
+      const res = { writeHead(c) { this.status = c }, end() {} }
+      h.routes[route]({ method: route === '/dsh-tone/set' ? 'POST' : 'GET', headers: {} }, res)
+      ok(route + ' 被 ' + code + ' 挡住', res.status === code, 'status=' + res.status)
+    }
+  }
+}
+
+console.log('\n[20h] 准入服务自己出错时也不能放行')
+{
+  // requestRejection 抛异常，说明不了这个请求是安全的。
+  // 这种情况必须当拒绝处理——误拒只是面板打不开，误放就是没上锁。
+  const h = makeHost()
+  const host3 = Object.assign({}, h.host)
+  host3.inject = (deps, fn) => {
+    const webServer = {
+      register(r) { h.routes[r.path] = r.handler; return () => {} },
+      tapIndex() { return () => {} },
+    }
+    const systemPrompt = { section() { return () => {} }, context() { return () => {} }, async assemble() { return { sections: [] } } }
+    const connection = { requestRejection() { throw new Error('boom') } }
+    fn({ webServer, systemPrompt, connection })
+    return () => {}
+  }
+  apply(host3)
+  const res = { writeHead(c) { this.status = c }, end() {} }
+  h.routes['/dsh-tone/state']({ method: 'GET', headers: {} }, res)
+  ok('准入抛异常时回 500', res.status === 500, 'status=' + res.status)
+}
+
+console.log('\n[21] 测试隔离与外部变更同步')
+{
+  // 这条守的是「跑测试别动用户的东西」。
+  // 以前 smoke 直接改写 ~/.dsh/dsh-tone.json 再恢复，跑一次就把
+  // 用户的档位按到基线；面板不跟随外部变更，用户就以为是自己变了。
+  ok('测试跑在临时 DSH_HOME 里', process.env.DSH_HOME === TMP_HOME, String(process.env.DSH_HOME))
+  ok('临时目录不在用户家目录下', path.resolve(TMP_HOME).indexOf(path.resolve(os.homedir(), '.dsh')) !== 0, TMP_HOME)
+
+  // 面板要能跟上外部变更（命令行改的、另一个窗口改的、插件自己改的）。
+  const w21 = fs.readFileSync(path.join(HERE, '..', 'lib', 'widget.js'), 'utf8')
+  ok('轮询比对外部档位', w21.indexOf('t !== state.tone') >= 0)
+  ok('轮询同时比对套', w21.indexOf('s2 !== state.toneSet') >= 0)
+  ok('用户正在拖时跳过同步', w21.indexOf('lastUserTouch') >= 0 && w21.indexOf('busy') >= 0)
+}
 
 // README 那个「N 条断言」在这里对账，而不是放在 finally 里 ——
 // finally 跑的时候 [12]-[15] 还没执行，数字会永远偏小（之前硬编码 +7 补过，治标不治本）。
